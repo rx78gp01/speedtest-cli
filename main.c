@@ -37,6 +37,7 @@
 
 #define ARRAY_SIZE(x) (sizeof(x)/sizeof(x[0]))
 
+#define SPEEDTEST_DEBUG_VERBOSE	(1)
 
 struct thread_para
 {
@@ -258,6 +259,15 @@ static int do_latency(char *p_url)
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, NULL);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 3L);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "haibbo speedtest-cli");
+
+#ifdef SPEEDTEST_DEBUG_VERBOSE
+    /*
+     * Ignore curl certificate verification
+     */
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
+    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+#endif
+
     res = curl_easy_perform(curl);
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &response_code);
     curl_easy_cleanup(curl);
@@ -634,7 +644,9 @@ static int get_upload_extension(char *server, char *p_ext)
         printf("curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
         return NOK;
     }
-    p = strstr(web.data, UPLOAD_EXTENSION_TAG);
+
+    if (web.data != NULL)
+	    p = strstr(web.data, UPLOAD_EXTENSION_TAG);
     if (p == NULL ||
         sscanf(p + strlen(UPLOAD_EXTENSION_TAG), "%*[^a-zA-Z]%[a-zA-Z]", p_ext) <= 0) {
         fprintf(stderr, "Upload extension not found\n");
@@ -719,6 +731,24 @@ static int get_closest_server()
     return OK;
 }
 
+#ifdef SPEEDTEST_DEBUG_VERBOSE
+static void dump_server_info_latency(int index, struct server_info *info, double latency)
+{
+    printf("Server [%d]:\n", index);
+    printf("\turl = [%s]\n", info->url);
+    printf("\tlat = [%lf]\n", info->lat);
+    printf("\tlon = [%lf]\n", info->lon);
+    printf("\tcountry = [%s]\n", info->country);
+    printf("\tid = [%d]\n", info->id);
+    printf("\tdistance = [%lf]\n", info->distance);
+    printf("\tlatency = [%lf]\n", latency);
+}
+#else
+static void dump_server_info_latency(int index, struct server_info *info, double latency)
+{
+}
+#endif
+
 static int get_best_server(int *p_index)
 {
     int     i;
@@ -731,6 +761,7 @@ static int get_best_server(int *p_index)
 
         sscanf(servers[i].url, "http://%[^/]speedtest/upload.%*s", server);
         latency = test_latency(server);
+        dump_server_info_latency(i, &servers[i], latency);
         if (minimum > latency ) {
 
             minimum = latency;
