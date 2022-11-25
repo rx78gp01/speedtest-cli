@@ -19,6 +19,7 @@
 
 #define INIT_DOWNLOAD_FILE_RESOLUTION 750
 #define FILE_350_SIZE                 245388
+#define UPLOAD_SIZE_MAX               7340032
 
 #define MAX_ISP_NAME         255
 #define MAX_IPADDRESS_STRLEN 48
@@ -30,7 +31,7 @@
 #define PI                      3.1415926
 #define EARTH_RADIUS            6378.137
 
-#define UPLOAD_CHRUNK_SIZE_MAX  512000 // Max upload chunk size 512K
+#define UPLOAD_CHRUNK_SIZE_MAX  524288 // Max upload chunk size 512K
 
 #define OK  0
 #define NOK 1
@@ -244,7 +245,7 @@ static void XMLCALL end_element(void *userData, const char *name)
 
 }
 
-static int do_latency(char *p_url)
+static int do_latency(char *p_url, int ssl)
 {
     char latency_url[URL_LENGTH_MAX + sizeof(LATENCY_TXT_URL)] = {0};
     CURL *curl;
@@ -261,11 +262,11 @@ static int do_latency(char *p_url)
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "haibbo speedtest-cli");
 
 #ifdef SPEEDTEST_DEBUG_VERBOSE
-    /*
-     * Ignore curl certificate verification
-     */
+     // Ignore curl certificate verification
+     if (ssl != 1) {
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
+    }
 #endif
 
     res = curl_easy_perform(curl);
@@ -274,19 +275,19 @@ static int do_latency(char *p_url)
 
     if (res != CURLE_OK || response_code != 200) {
 
-        printf("curl_easy_perform() failed: %s %ld\n", curl_easy_strerror(res), response_code);
+        printf("curl_easy_perform() at do_latency failed: %s %ld\n", curl_easy_strerror(res), response_code);
         return NOK;
     }
     return OK;
 }
 
-static double test_latency(char *p_url)
+static double test_latency(char *p_url, int ssl)
 {
     struct timeval s_time, e_time;
     double latency;
 
     gettimeofday(&s_time, NULL);
-    if (do_latency(p_url) != OK)
+    if (do_latency(p_url, ssl) != OK)
         return DBL_MAX;
     gettimeofday(&e_time, NULL);
 
@@ -311,7 +312,7 @@ static void* do_download(void* data)
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "haibbo speedtest-cli");
     res = curl_easy_perform(curl);
     if (res != CURLE_OK) {
-        printf("curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
+        printf("curl_easy_perform() at do_download failed: %s\n", curl_easy_strerror(res));
         curl_easy_cleanup(curl);
         return NULL;
     }
@@ -332,7 +333,7 @@ static void loop_threads(struct thread_para *p_thread, int num_thread, double *s
 
 
     do {
-        int i, time = 0;
+        int i = 0;
         double sum = 0;
         alive = 0;
 
@@ -512,6 +513,7 @@ static int do_upload(struct thread_para* para)
     CURLcode res;
     long size = para->upload_size;
     int loop = 1;
+    double size_upload;
 	
     if (size > UPLOAD_CHRUNK_SIZE_MAX)
         loop = (size / UPLOAD_CHRUNK_SIZE_MAX) + 1;
@@ -527,8 +529,6 @@ static int do_upload(struct thread_para* para)
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "haibbo speedtest-cli");
     
     while (loop) {
-
-        double size_upload;
         
         para->chunk_size = size - para->result> UPLOAD_CHRUNK_SIZE_MAX ? 
                                UPLOAD_CHRUNK_SIZE_MAX : size - para->result;
@@ -536,19 +536,19 @@ static int do_upload(struct thread_para* para)
         
         res = curl_easy_perform(curl);
         if (res != CURLE_OK) {
-            fprintf(stderr, "Error: curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
+            fprintf(stderr, "Error: curl_easy_perform() at do_upload failed: %s\n", curl_easy_strerror(res));
             curl_easy_cleanup(curl);
             para->finish = 1;
             return NOK;
         }
         curl_easy_getinfo(curl, CURLINFO_SIZE_UPLOAD, &size_upload);
+        //printf("size upload = %lf\n", size_upload);
         para->result += size_upload;
         loop--;
     }
     
     curl_easy_cleanup(curl);
     para->finish = 1;
-    //printf("size upload = %lf\n", size_upload);
     return OK;
 }
 
@@ -570,7 +570,7 @@ static int test_upload(char *p_url, int num_thread, long size, char *p_ext, char
         paras[i].result = 0;
         paras[i].finish = 0;
         paras[i].upload_size = size/num_thread;
-        //printf("szeleft = %ld\n", paras[i].upload_size);
+        printf("upload size left = %ld\n", paras[i].upload_size);
         error = pthread_create(&paras[i].tid, NULL, (void*)do_upload, (void*)&paras[i]);
 
         if ( error != 0)
@@ -628,7 +628,6 @@ static int get_upload_extension(char *server, char *p_ext)
     CURLcode res;
     struct web_buffer web;
     char* p = NULL;
-    int i;
 
     memset(&web, 0, sizeof(web));
 
@@ -641,12 +640,14 @@ static int get_upload_extension(char *server, char *p_ext)
     res = curl_easy_perform(curl);
     curl_easy_cleanup(curl);
     if (res != CURLE_OK) {
-        printf("curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
+        printf("curl_easy_perform() at get_upload failed: %s\n", curl_easy_strerror(res));
         return NOK;
     }
 
-    if (web.data != NULL)
-	    p = strstr(web.data, UPLOAD_EXTENSION_TAG);
+    if (web.data != NULL) {
+         p = strstr(web.data, UPLOAD_EXTENSION_TAG);
+    }
+
     if (p == NULL ||
         sscanf(p + strlen(UPLOAD_EXTENSION_TAG), "%*[^a-zA-Z]%[a-zA-Z]", p_ext) <= 0) {
         fprintf(stderr, "Upload extension not found\n");
@@ -662,8 +663,6 @@ static int get_client_info(struct client_info *p_client)
     CURLcode res;
     XML_Parser xml = XML_ParserCreate(NULL);
     struct web_buffer web;
-    char* p = NULL;
-    int i;
 
     memset(&web, 0, sizeof(web));
 
@@ -678,7 +677,7 @@ static int get_client_info(struct client_info *p_client)
     curl_easy_cleanup(curl);
     if (res != CURLE_OK) {
 
-        printf("curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
+        printf("curl_easy_perform() at get_client failed: %s\n", curl_easy_strerror(res));
         return NOK;
     }
     XML_SetUserData(xml, p_client);
@@ -688,8 +687,8 @@ static int get_client_info(struct client_info *p_client)
         fprintf(stderr, "Parse client failed\n");
         exit(-1);
     }
+    
     free(web.data);
-
     return OK;
 }
 
@@ -699,8 +698,6 @@ static int get_closest_server()
     CURLcode res;
     XML_Parser xml = XML_ParserCreate(NULL);
     struct web_buffer web;
-    char* p = NULL;
-    int i;
     struct server_info server;
 
     memset(&web, 0, sizeof(web));
@@ -716,7 +713,7 @@ static int get_closest_server()
     res = curl_easy_perform(curl);
     curl_easy_cleanup(curl);
     if (res != CURLE_OK) {
-        printf("curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
+        printf("curl_easy_perform() at get_server failed: %s\n", curl_easy_strerror(res));
         return NOK;
     }
     XML_SetUserData(xml, &server);
@@ -727,7 +724,7 @@ static int get_closest_server()
         fprintf(stderr, "Parse servers list failed\n");
         exit(-1);
     }
-
+    
     return OK;
 }
 
@@ -749,7 +746,7 @@ static void dump_server_info_latency(int index, struct server_info *info, double
 }
 #endif
 
-static int get_best_server(int *p_index)
+static int get_best_server(int *p_index, int ssl)
 {
     int     i;
     double  minimum = DBL_MAX;
@@ -760,7 +757,7 @@ static int get_best_server(int *p_index)
         double latency;
 
         sscanf(servers[i].url, "http://%[^/]speedtest/upload.%*s", server);
-        latency = test_latency(server);
+        latency = test_latency(server, ssl);
         dump_server_info_latency(i, &servers[i], latency);
         if (minimum > latency ) {
 
@@ -775,18 +772,20 @@ static int get_best_server(int *p_index)
 
 int main(int argc, char *argv[])
 {
-    int     opt, num_thread;
+    int     opt, num_thread, ssl;
     char    server_url[URL_LENGTH_MAX], ext[UPLOAD_EXT_LENGTH_MAX];
     double  latency, speed, download_speed, upload_speed;
-    int     dsize, sindex;
+    int     dsize, sindex, usize;
 
     sindex      = -1;
     num_thread  = 4;
+    ssl         = 1;
     dsize       = INIT_DOWNLOAD_FILE_RESOLUTION;
+    usize       = 524288;
     memset(server_url, 0, sizeof(server_url));
     memset(ext, 0, sizeof(ext));
 
-    while ( (opt = getopt(argc, argv, "p:s:lh")) > 0) {
+    while ( (opt = getopt(argc, argv, "p:s:u:lch")) > 0) {
 
         switch (opt) {
             case 'p':
@@ -800,7 +799,18 @@ int main(int argc, char *argv[])
             case 's':
                 strncpy(server_url, optarg, URL_LENGTH_MAX);
                 break;
+            case 'u':
+                if (atoi(optarg) > UPLOAD_SIZE_MAX) {
+
+                    fprintf(stderr, "support upload size upload to %d", UPLOAD_SIZE_MAX);
+                    exit(-1);
+                }
+                usize = atoi(optarg);
+                break;
             case 'l':
+                break;
+            case 'c':
+                ssl = 0;
                 break;
             case 'h':
                 show_usage(argv);
@@ -815,7 +825,7 @@ int main(int argc, char *argv[])
         get_closest_server();
         printf("Testing from %s (%s)...\n", client.isp, client.ip);
         printf("Selecting best server based on ping...\n");
-        get_best_server(&sindex);
+        get_best_server(&sindex, ssl);
         sscanf(servers[sindex].url, "http://%[^/]/speedtest/upload.%4s", server_url, ext);
         printf("Bestest server: %s(%0.2fKM)\n", server_url, servers[sindex].distance);
     }
@@ -823,7 +833,7 @@ int main(int argc, char *argv[])
     /* Must initialize libcurl before any threads are started */
     curl_global_init(CURL_GLOBAL_ALL);
 
-    latency = test_latency(server_url);
+    latency = test_latency(server_url, ssl);
     if (latency == DBL_MAX)
         exit(-1);
     printf("Server latency is %0.0fms\n", latency);
@@ -836,14 +846,30 @@ int main(int argc, char *argv[])
 
     printf("Download speed: %0.2fMbps\n", ((download_speed*8)/(1024*1024)));
 
-    if (ext[0] == 0 && get_upload_extension(server_url, ext) != OK)
-        exit(-1);
+    if (ext[0] == 0 && get_upload_extension(server_url, ext) != OK) {
+        if (server_url != NULL) {
+            free(server_url);
+        }
 
-    speed = test_upload(server_url, num_thread, speed/10, ext, 0);
+        if (ext != NULL) {
+            free(ext);
+        }
+        exit(-1);
+    }
+    //speed = test_upload(server_url, 2, 0, ext, 0);
 
     fprintf(stderr, "Testing upload speed");
-    upload_speed = test_upload(server_url, num_thread, speed*SPEEDTEST_TIME_MAX, ext, 1);
+    upload_speed = test_upload(server_url, 2, usize, ext, 1);
 
     printf("Upload speed: %0.2fMbps\n", ((upload_speed*8)/(1024*1024)));
 
+    if (server_url != NULL) {
+        free(server_url);
+    }
+
+    if (ext != NULL) {
+        free(ext);
+    }
+
+    return 0;
 }
